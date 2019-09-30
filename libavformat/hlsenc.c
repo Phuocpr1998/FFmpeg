@@ -47,13 +47,18 @@
 #include "internal.h"
 #include "os_support.h"
 
+enum KeyType {
+    KEY_AES_128,
+    KEY_AES_256
+};
+
 typedef enum {
   HLS_START_SEQUENCE_AS_START_NUMBER = 0,
   HLS_START_SEQUENCE_AS_SECONDS_SINCE_EPOCH = 1,
   HLS_START_SEQUENCE_AS_FORMATTED_DATETIME = 2,  // YYYYMMDDhhmmss
 } StartSequenceSourceType;
 
-#define KEYSIZE 16
+#define KEYSIZE 32
 #define LINE_BUFFER_SIZE 1024
 #define HLS_MICROSECOND_UNIT   1000000
 
@@ -66,7 +71,8 @@ typedef struct HLSSegment {
     int64_t size;
 
     char key_uri[LINE_BUFFER_SIZE + 1];
-    char iv_string[KEYSIZE*2 + 1];
+    char iv_string[KEYSIZE + 1];
+    enum KeyType key_type;
 
     struct HLSSegment *next;
 } HLSSegment;
@@ -167,7 +173,7 @@ typedef struct HLSContext {
     char key_file[LINE_BUFFER_SIZE + 1];
     char key_uri[LINE_BUFFER_SIZE + 1];
     char key_string[KEYSIZE*2 + 1];
-    char iv_string[KEYSIZE*2 + 1];
+    char iv_string[KEYSIZE + 1];
     AVDictionary *vtt_format_options;
 
     char *method;
@@ -488,7 +494,7 @@ static int hls_encryption_start(AVFormatContext *s)
     HLSContext *hls = s->priv_data;
     int ret;
     AVIOContext *pb;
-    uint8_t key[KEYSIZE];
+    uint8_t key[KEYSIZE] = {0};
 
     if ((ret = s->io_open(s, &pb, hls->key_info_file, AVIO_FLAG_READ, NULL)) < 0) {
         av_log(hls, AV_LOG_ERROR,
@@ -524,13 +530,13 @@ static int hls_encryption_start(AVFormatContext *s)
 
     ret = avio_read(pb, key, sizeof(key));
     ff_format_io_close(s, &pb);
-    if (ret != sizeof(key)) {
+    if (ret != sizeof(key) && ret != sizeof(key) / 2) { // only accept key 32 or 16 byte
         av_log(hls, AV_LOG_ERROR, "error reading key file %s\n", hls->key_file);
         if (ret >= 0 || ret == AVERROR_EOF)
             ret = AVERROR(EINVAL);
         return ret;
     }
-    ff_data_to_hex(hls->key_string, key, sizeof(key), 0);
+    ff_data_to_hex(hls->key_string, key, ret, 0);
 
     return 0;
 }
@@ -845,6 +851,11 @@ static int hls_append_segment(struct AVFormatContext *s, HLSContext *hls, double
     if (hls->key_info_file || hls->encrypt) {
         av_strlcpy(en->key_uri, hls->key_uri, sizeof(en->key_uri));
         av_strlcpy(en->iv_string, hls->iv_string, sizeof(en->iv_string));
+        if (strlen(hls->key_string) == 64) {
+            en->key_type = KEY_AES_256;
+        } else {
+            en->key_type = KEY_AES_128;
+        }
     }
 
     if (!hls->segments)
@@ -1062,7 +1073,15 @@ static int hls_window(AVFormatContext *s, int last)
     for (en = hls->segments; en; en = en->next) {
         if ((hls->encrypt || hls->key_info_file) && (!key_uri || strcmp(en->key_uri, key_uri) ||
                                     av_strcasecmp(en->iv_string, iv_string))) {
-            avio_printf(out, "#EXT-X-KEY:METHOD=AES-128,URI=\"%s\"", en->key_uri);
+            if (en->key_type == KEY_AES_256)
+            {
+                avio_printf(out, "#EXT-X-KEY:METHOD=AES-256,URI=\"%s\"", en->key_uri);
+            }
+            else
+            {
+                avio_printf(out, "#EXT-X-KEY:METHOD=AES-128,URI=\"%s\"", en->key_uri);
+            }
+
             if (*en->iv_string)
                 avio_printf(out, ",IV=0x%s", en->iv_string);
             avio_printf(out, "\n");
@@ -1251,6 +1270,8 @@ static int hls_start(AVFormatContext *s)
                     goto fail;
             }
         }
+        av_log(s, AV_LOG_INFO, "Key String %s %d\n", c->key_string, strlen(c->key_string));
+        av_log(s, AV_LOG_INFO, "IV String %s %d\n", c->iv_string, strlen(c->iv_string));
         if ((err = av_dict_set(&options, "encryption_key", c->key_string, 0))
                 < 0)
             goto fail;
@@ -1259,6 +1280,18 @@ static int hls_start(AVFormatContext *s)
             snprintf(iv_string, sizeof(iv_string), "%032"PRIx64, c->sequence);
         if ((err = av_dict_set(&options, "encryption_iv", iv_string, 0)) < 0)
            goto fail;
+
+        if (strlen(c->key_string) == 32) {
+            av_log(s, AV_LOG_INFO, "encryption_method: AES-128\n");
+            if ((err = av_dict_set(&options, "encryption_method", "AES-128", 0)) < 0)
+                goto fail;
+        } else if (strlen(c->key_string) == 64) {
+            av_log(s, AV_LOG_INFO, "encryption_method: AES-256\n");
+            if ((err = av_dict_set(&options, "encryption_method", "AES-256", 0)) < 0)
+                goto fail;
+        } else {
+            goto fail;
+        }
 
         filename = av_asprintf("crypto:%s", oc->filename);
         if (!filename) {
