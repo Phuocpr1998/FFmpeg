@@ -1168,7 +1168,7 @@ static int open_input(HLSContext *c, struct playlist *pls, struct segment *seg)
             }
             av_strlcpy(pls->key_url, seg->key, sizeof(pls->key_url));
         }
-        ff_data_to_hex(iv, seg->iv, strlen(seg->iv), 0);
+        ff_data_to_hex(iv, seg->iv, sizeof(seg->iv), 0);
         ff_data_to_hex(key, pls->key, strlen(pls->key), 0);
         iv[32] = key[32] = '\0';
         if (strstr(seg->url, "://"))
@@ -1209,7 +1209,7 @@ static int open_input(HLSContext *c, struct playlist *pls, struct segment *seg)
             }
             av_strlcpy(pls->key_url, seg->key, sizeof(pls->key_url));
         }
-        ff_data_to_hex(iv, seg->iv, strlen(seg->iv), 0);
+        ff_data_to_hex(iv, seg->iv, sizeof(seg->iv), 0);
         ff_data_to_hex(key, pls->key, strlen(pls->key), 0);
         iv[32] = key[64] = '\0';
         if (strstr(seg->url, "://"))
