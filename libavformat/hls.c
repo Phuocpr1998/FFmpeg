@@ -1157,7 +1157,7 @@ static int open_input(HLSContext *c, struct playlist *pls, struct segment *seg)
             if (open_url(pls->parent, &pb, seg->key, c->avio_opts, opts, NULL) == 0) {
                 ret = avio_read(pb, pls->key, sizeof(pls->key));
                 av_log(pls->parent, AV_LOG_VERBOSE, "Playlist key %s len %d\n", pls->key, strlen(pls->key));
-                if (ret != sizeof(pls->key)) {
+                if (ret != sizeof(pls->key)  && ret != sizeof(key) / 2) {
                     av_log(NULL, AV_LOG_ERROR, "Unable to read key file %s\n",
                            seg->key);
                 }
@@ -1198,7 +1198,7 @@ static int open_input(HLSContext *c, struct playlist *pls, struct segment *seg)
             if (open_url(pls->parent, &pb, seg->key, c->avio_opts, opts, NULL) == 0) {
                 ret = avio_read(pb, pls->key, sizeof(pls->key));
                 av_log(pls->parent, AV_LOG_VERBOSE, "Playlist key %s len %d\n", pls->key, strlen(pls->key));
-                if (ret != sizeof(pls->key)) {
+                if (ret != sizeof(pls->key) && ret != sizeof(key) / 2) {
                     av_log(NULL, AV_LOG_ERROR, "Unable to read key file %s\n",
                            seg->key);
                 }
