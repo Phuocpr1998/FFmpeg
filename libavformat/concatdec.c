@@ -20,6 +20,7 @@
 
 #include "libavutil/avassert.h"
 #include "libavutil/avstring.h"
+#include "libavutil/bprint.h"
 #include "libavutil/intreadwrite.h"
 #include "libavutil/opt.h"
 #include "libavutil/parseutils.h"
@@ -128,10 +129,10 @@ static int add_file(AVFormatContext *avf, char *filename, ConcatFile **rfile,
         url = filename;
         filename = NULL;
     } else {
-        url_len = strlen(avf->filename) + strlen(filename) + 16;
+        url_len = strlen(avf->url) + strlen(filename) + 16;
         if (!(url = av_malloc(url_len)))
             FAIL(AVERROR(ENOMEM));
-        ff_make_absolute_url(url, url_len, avf->filename, filename);
+        ff_make_absolute_url(url, url_len, avf->url, filename);
         av_freep(&filename);
     }
 
@@ -330,6 +331,12 @@ static int open_file(AVFormatContext *avf, unsigned fileno)
         return AVERROR(ENOMEM);
 
     new_avf->flags |= avf->flags & ~AVFMT_FLAG_CUSTOM_IO;
+
+#ifdef FF_API_LAVF_KEEPSIDE_FLAG
+    if (avf->flags & AVFMT_FLAG_KEEP_SIDE_DATA) {
+        new_avf->flags |= AVFMT_FLAG_KEEP_SIDE_DATA;
+    }
+#endif
     new_avf->interrupt_callback = avf->interrupt_callback;
 
     if ((ret = ff_copy_whiteblacklists(new_avf, avf)) < 0)
@@ -345,6 +352,15 @@ static int open_file(AVFormatContext *avf, unsigned fileno)
         fps_flag = (int) strtol(t->value, NULL, 10);
         if (fps_flag > 0) {
             av_dict_set_int(&new_avf->metadata, "skip-calc-frame-rate", fps_flag, 0);
+        }
+    }
+
+    t = av_dict_get(tmp, "nb-streams", NULL, AV_DICT_MATCH_CASE);
+    if (t) {
+        int nb_streams = (int) strtol(t->value, NULL, 10);
+        if (nb_streams > 0) {
+            av_dict_set_int(&new_avf->metadata, "nb-streams", nb_streams, 0);
+            av_dict_set_int(&cat->options, "nb-streams", 0, 0);
         }
     }
 
@@ -414,21 +430,21 @@ static int concat_read_close(AVFormatContext *avf)
 static int concat_read_header(AVFormatContext *avf, AVDictionary **options)
 {
     ConcatContext *cat = avf->priv_data;
-    uint8_t buf[4096];
+    AVBPrint bp;
     uint8_t *cursor, *keyword;
-    int ret, line = 0, i;
+    int line = 0, i;
     unsigned nb_files_alloc = 0;
     ConcatFile *file = NULL;
-    int64_t time = 0;
+    int64_t ret, time = 0;
 
     if (options && *options)
         av_dict_copy(&cat->options, *options, 0);
 
-    while (1) {
-        if ((ret = ff_get_line(avf->pb, buf, sizeof(buf))) <= 0)
-            break;
+    av_bprint_init(&bp, 0, AV_BPRINT_SIZE_UNLIMITED);
+
+    while ((ret = ff_read_line_to_bprint_overwrite(avf->pb, &bp)) >= 0) {
         line++;
-        cursor = buf;
+        cursor = bp.str;
         keyword = get_keyword(&cursor);
         if (!*keyword || *keyword == '#')
             continue;
@@ -504,7 +520,7 @@ static int concat_read_header(AVFormatContext *avf, AVDictionary **options)
             FAIL(AVERROR_INVALIDDATA);
         }
     }
-    if (ret < 0)
+    if (ret != AVERROR_EOF && ret < 0)
         goto fail;
     if (!cat->nb_files)
         FAIL(AVERROR_INVALIDDATA);
@@ -530,9 +546,11 @@ static int concat_read_header(AVFormatContext *avf, AVDictionary **options)
                                                MATCH_ONE_TO_ONE;
     if ((ret = open_file(avf, 0)) < 0)
         goto fail;
+    av_bprint_finalize(&bp, NULL);
     return 0;
 
 fail:
+    av_bprint_finalize(&bp, NULL);
     concat_read_close(avf);
     return ret;
 }
@@ -647,7 +665,6 @@ static int concat_read_packet(AVFormatContext *avf, AVPacket *pkt)
             av_packet_unref(pkt);
             continue;
         }
-        pkt->stream_index = cs->out_stream_index;
         break;
 open_fail:
         ++try_counter;
@@ -700,6 +717,7 @@ open_fail:
         }
     }
 
+    pkt->stream_index = cs->out_stream_index;
     return ret;
 }
 
